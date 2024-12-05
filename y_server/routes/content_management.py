@@ -197,7 +197,6 @@ def read():
 
     elif mode == "rchrono_comments":
         # get posts with the most comments in the specified round
-        # [(131503, 8), (131220, 6), (130728, 6), (130219, 6), (131822, 5), (131764, 5), (131704, 5), (131415, 5), (131182, 5), (131103, 5)]
         if articles:
             posts = [
                 (
