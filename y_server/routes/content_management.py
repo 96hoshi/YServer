@@ -194,6 +194,33 @@ def read():
                 )
 
             posts = [posts, additional_posts]
+        else:
+            posts = [posts]
+
+    elif mode == "rchrono_comments":
+        # get posts with the most comments in the specified round
+        if articles:
+            posts = [
+                (
+                    db.session.query(Post, func.count(Post.id).label("comment_count"))
+                    .filter(Post.round >= visibility, Post.thread_id != -1, Post.news_id != -1)
+                    .group_by(Post.thread_id)
+                    .order_by(desc("comment_count"), desc(Post.id))
+                    .limit(limit)
+                    .all()
+                )
+            ]
+        else:
+            posts = [
+                (
+                    db.session.query(Post, func.count(Post.id).label("comment_count"))
+                    .filter(Post.round >= visibility, Post.thread_id != -1)
+                    .group_by(Post.thread_id)
+                    .order_by(desc("comment_count"), desc(Post.id))
+                    .limit(limit)
+                    .all()
+                )
+            ]
 
     else:
         # get posts in random order
