@@ -58,7 +58,7 @@ def read():
                                 'rchrono_followers_popularity',
                                 'rchrono_comments',
                                 'common_interests',
-                                'common_interests_popularity']
+                                'common_user_interests']
     if mode in follower_required_modes:
         # get followers
         follower = Follow.query.filter_by(action="follow", user_id=uid)
@@ -72,7 +72,7 @@ def read():
             Post.news_id != -1 if articles else True
         )
 
-        posts = [query.order_by(desc(Post.id)).limit(10)]
+        posts = [query.order_by(desc(Post.id)).limit(limit)]
 
     elif mode == "rchrono_popularity":
         # get posts ordered by likes in reverse chronological order
@@ -143,33 +143,36 @@ def read():
             posts += [additional_posts]
 
     elif mode == "rchrono_comments":
-        # get posts with the most comments in reverse chronological order
+        # get posts with the most comments in reverse chronological order (as longer thread)
         query = (
-            db.session.query(Post, func.count(Post.id).label("comment_count"))
+            db.session.query(Post, func.count(Post.thread_id).label("comment_count"))
             .filter(
                 Post.round >= visibility,
                 Post.thread_id != -1,
-                Post.user_id.in_(follower_ids),
                 Post.news_id != -1 if articles else True
             )
+            .group_by(Post.thread_id)
         )
 
+        query_follower = query.filter(Post.user_id.in_(follower_ids))
+        
         posts = [
-            query.group_by(Post)
+            query_follower
             .order_by(desc("comment_count"), desc(Post.id))
             .limit(follower_posts_limit)
             .all()
         ]
 
         if additional_posts_limit != 0:
-            additional_query = Post.query.filter(
-                Post.round >= visibility,
-                Post.user_id != uid,
-                Post.user_id.notin_(follower_ids),
-                Post.news_id != -1 if articles else True
+            query_additional = query.filter(Post.user_id.notin_(follower_ids))
+
+            additional_posts = (
+                query_additional
+                .order_by(desc("comment_count"), desc(Post.id))
+                .limit(additional_posts_limit)
+                .all()
             )
 
-            additional_posts = additional_query.order_by(desc(Post.id)).limit(additional_posts_limit)
             posts += [additional_posts]
 
     elif mode == "common_interests":
@@ -208,7 +211,7 @@ def read():
 
             posts += [additional_posts]
 
-    elif mode == "common_interests_popularity":
+    elif mode == "common_user_interests":
         # get users with common topic interests
         common_users_query = (
             db.session.query(User_mgmt.id, func.count(User_interest.interest_id).label("match_count"))
@@ -224,7 +227,6 @@ def read():
             .limit(limit)
             .subquery()
         )
-        # TODO: check correctness
         # fetch posts liked by users with common interests
         posts = [(
                 db.session.query(Post, func.count(Reactions.user_id).label("total"))
@@ -260,7 +262,7 @@ def read():
                 res.append(post.id)
 
     # save recommendations
-    current_round = Rounds.query.order_by(desc(Rounds.id)).first()
+    #current_round = Rounds.query.order_by(desc(Rounds.id)).first()
     recs = Recommendations(
         user_id=uid, post_ids="|".join([str(x) for x in res]), round=current_round.id
     )
