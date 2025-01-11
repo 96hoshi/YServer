@@ -1,8 +1,8 @@
 {
-  "name": "local_test",
+  "name": "rchrono_comments",
   "host": "0.0.0.0",
   "port": 5010,
   "debug": "True",
-  "reset_db": "True",
+  "reset_db": "False",
   "modules": ["news", "voting", "image"]
 }

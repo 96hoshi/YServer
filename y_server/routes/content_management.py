@@ -54,16 +54,6 @@ def read():
         follower_posts_limit = limit
         additional_posts_limit = 0
 
-    follower_required_modes = ['rchrono_followers',
-                                'rchrono_followers_popularity',
-                                'rchrono_comments',
-                                'common_interests',
-                                'common_user_interests']
-    if mode in follower_required_modes:
-        # get followers
-        follower = Follow.query.filter_by(action="follow", user_id=uid)
-        follower_ids = [f.follower_id for f in follower if f.follower_id != uid]
-
     if mode == "rchrono":
         # get posts in reverse chronological order
         query = db.session.query(Post).filter(
@@ -94,6 +84,8 @@ def read():
 
     elif mode == "rchrono_followers":
         # get posts from followers in reverse chronological order
+
+        follower_ids = __get_followers(uid)
         query = Post.query.filter(
             Post.round >= visibility,
             Post.user_id.in_(follower_ids),
@@ -115,6 +107,8 @@ def read():
 
     elif mode == "rchrono_followers_popularity":
         # get posts from followers ordered by likes and reverse chronologically
+
+        follower_ids = __get_followers(uid)
         query = (
             db.session.query(Post, func.count(Reactions.user_id).label("total"))
             .join(Reactions)
@@ -144,16 +138,17 @@ def read():
 
     elif mode == "rchrono_comments":
         # get posts with the most comments in reverse chronological order (as longer thread)
+
         query = (
             db.session.query(Post, func.count(Post.thread_id).label("comment_count"))
             .filter(
                 Post.round >= visibility,
-                Post.thread_id != -1,
+                Post.comment_to != -1,
                 Post.news_id != -1 if articles else True
             )
             .group_by(Post.thread_id)
         )
-
+        follower_ids = __get_followers(uid)
         query_follower = query.filter(Post.user_id.in_(follower_ids))
         
         posts = [
@@ -212,6 +207,8 @@ def read():
             posts += [additional_posts]
 
     elif mode == "common_user_interests":
+        follower_ids = __get_followers(uid)
+
         # get users with common topic interests
         common_users_query = (
             db.session.query(User_mgmt.id, func.count(User_interest.interest_id).label("match_count"))
@@ -235,7 +232,6 @@ def read():
                     Reactions.user_id.in_(
                         db.session.query(common_users_query.c.id)
                     ),
-                    #Reactions.type == "like",
                     Post.round >= visibility,
                     Post.news_id != -1 if articles else True
             )
@@ -243,6 +239,7 @@ def read():
             .order_by(desc("total"), desc(Post.id))
             .limit(limit)
         )]
+
 
     else:
         # get posts in random order
@@ -262,7 +259,7 @@ def read():
                 res.append(post.id)
 
     # save recommendations
-    #current_round = Rounds.query.order_by(desc(Rounds.id)).first()
+    current_round = Rounds.query.order_by(desc(Rounds.id)).first()
     recs = Recommendations(
         user_id=uid, post_ids="|".join([str(x) for x in res]), round=current_round.id
     )
@@ -631,3 +628,27 @@ def get_thread_root():
     post = Post.query.filter_by(id=post_id).first()
 
     return json.dumps(post.thread_id)
+
+def __get_followers(uid):
+    """
+    Get the followers of a user.
+
+    :param uid: the user id
+    :return: a list of followers
+    """
+    # Get the latest round for each follower-user relationship
+    latest_rounds = Follow.query.filter_by(user_id=uid).with_entities(
+        Follow.follower_id,
+        func.max(Follow.round).label("latest_round")
+    ).group_by(Follow.follower_id).subquery()
+
+    # Filter followers with the latest action as "follow"
+    follower = Follow.query.join(
+        latest_rounds, 
+        (Follow.follower_id == latest_rounds.c.follower_id) & 
+        (Follow.round == latest_rounds.c.latest_round)
+    ).filter(Follow.action == "follow").with_entities(Follow.follower_id).distinct()
+
+    res = [f.follower_id for f in follower if f.follower_id != uid]
+
+    return res
