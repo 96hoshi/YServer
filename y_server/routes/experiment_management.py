@@ -18,6 +18,7 @@ from y_server.modals import (
     User_interest,
     Images,
     Article_topics,
+    Follow_status,
 )
 
 
@@ -33,6 +34,7 @@ def reset_experiment():
     db.session.query(Post).delete()
     db.session.query(Reactions).delete()
     db.session.query(Follow).delete()
+    db.session.query(Follow_status).delete()
     db.session.query(Hashtags).delete()
     db.session.query(Post_hashtags).delete()
     db.session.query(Post_emotions).delete()
