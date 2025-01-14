@@ -6,6 +6,7 @@ import numpy as np
 from y_server.modals import (
     User_mgmt,
     Follow,
+    Follow_status
 )
 
 
@@ -25,28 +26,35 @@ def add_follow():
     action = data["action"]
     tid = int(data["tid"])
 
-    user_id = User_mgmt.query.filter_by(id=user_id).first()
-    target = User_mgmt.query.filter_by(id=target).first()
+    # user_id = User_mgmt.query.filter_by(id=user_id).first()
+    # target = User_mgmt.query.filter_by(id=target).first()
 
     # cannot follow yourself
-    if user_id.id == target.id:
+    if user_id == target:
         return json.dumps({"status": 200})
 
-    exiting_rel = (
-        Follow.query.filter_by(user_id=user_id.id, follower_id=target.id)
-        .order_by(Follow.round.desc())
-        .first()
-    )
+    existing_rel = Follow_status.query.filter_by(user_id=user_id, follower_id=target).first()
 
-    if exiting_rel is not None:
-        # cannot perform the same action twice in a row
-        if exiting_rel.action == action:
+    if action == "follow":
+        if existing_rel:
+            # Already following
             return json.dumps({"status": 200})
-    # cannot unfollow if there is no follow
-    elif exiting_rel is None and action == "unfollow":
-        return json.dumps({"status": 200})
+        else:
+            # Create follow relationship
+            new_follow = Follow_status(user_id=user_id, follower_id=target, round=tid)
+            db.session.add(new_follow)
+    elif action == "unfollow":
+        if existing_rel:
+            # Remove follow relationship
+            db.session.delete(existing_rel)
+        else:
+            # Cannot unfollow if no existing relationship
+            return json.dumps({"status": 200})
+    else:
+        # Invalid action
+        return json.dumps({"status": 400})
 
-    rel = Follow(user_id=user_id.id, follower_id=target.id, round=tid, action=action)
+    rel = Follow(user_id=user_id, follower_id=target, round=tid, action=action)
 
     db.session.add(rel)
     db.session.commit()
@@ -67,15 +75,16 @@ def followers():
     data = json.loads(request.get_data())
     user_id = data["user_id"]
 
-    user = User_mgmt.query.filter_by(id=user_id).first()
-    all_followers = Follow.query.filter_by(user_id=user.id)
-
+    # user = User_mgmt.query.filter_by(id=user_id).first()
+    all_followers = Follow_status.query.filter_by(user_id=user_id).all()
+    username = User_mgmt.query.filter_by(id=user_id).first().username
+    
     res = []
     for follower in all_followers:
         res.append(
             {
                 "user_id": follower.follower_id,
-                "username": User_mgmt.query.filter_by(id=user_id).first().username,
+                "username": username,
                 "since": follower.round,
             }
         )
@@ -190,17 +199,18 @@ def __get_two_hops_neighbors(node_id):
     first_order_followers = set(
         [
             f.follower_id
-            for f in Follow.query.filter_by(user_id=node_id, action="follow")
+            for f in Follow_status.query.filter_by(user_id=node_id)
         ]
     )
     # (direct_neighbors, second_order_followers)
-    second_order_followers = Follow.query.filter(
-        Follow.user_id.in_(first_order_followers), Follow.action == "follow"
+    second_order_followers = Follow_status.query.filter(
+        Follow_status.user_id.in_(first_order_followers),
+        Follow_status.follower_id != node_id
     )
     # (second_order_followers, third_order_followers)
-    third_order_followers = Follow.query.filter(
-        Follow.user_id.in_([f.follower_id for f in second_order_followers]),
-        Follow.action == "follow",
+    third_order_followers = Follow_status.query.filter(
+        Follow_status.user_id.in_([f.follower_id for f in second_order_followers]),
+        Follow_status.follower_id != node_id
     )
 
     candidate_to_follower = {}

@@ -162,3 +162,10 @@ class Article_topics(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     article_id = db.Column(db.Integer, db.ForeignKey("articles.id"), nullable=False)
     topic_id = db.Column(db.Integer, db.ForeignKey("interests.iid"), nullable=False)
+
+
+class Follow_status(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user_mgmt.id"), nullable=False)
+    follower_id = db.Column(db.Integer, db.ForeignKey("user_mgmt.id"), nullable=False)
+    round = db.Column(db.Integer, nullable=False)

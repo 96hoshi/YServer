@@ -10,6 +10,7 @@ from y_server.modals import (
     Post,
     Recommendations,
     Follow,
+    Follow_status,
     Reactions,
     Mentions,
     User_interest,
@@ -85,7 +86,7 @@ def read():
     elif mode == "rchrono_followers":
         # get posts from followers in reverse chronological order
 
-        follower_ids = __get_followers(uid)
+        follower_ids = __get_follows(uid)
         query = Post.query.filter(
             Post.round >= visibility,
             Post.user_id.in_(follower_ids),
@@ -108,7 +109,7 @@ def read():
     elif mode == "rchrono_followers_popularity":
         # get posts from followers ordered by likes and reverse chronologically
 
-        follower_ids = __get_followers(uid)
+        follower_ids = __get_follows(uid)
         query = (
             db.session.query(Post, func.count(Reactions.user_id).label("total"))
             .join(Reactions)
@@ -148,7 +149,7 @@ def read():
             )
             .group_by(Post.thread_id)
         )
-        follower_ids = __get_followers(uid)
+        follower_ids = __get_follows(uid)
         query_follower = query.filter(Post.user_id.in_(follower_ids))
         
         posts = [
@@ -207,7 +208,7 @@ def read():
             posts += [additional_posts]
 
     elif mode == "common_user_interests":
-        follower_ids = __get_followers(uid)
+        follower_ids = __get_follows(uid)
 
         # get users with common topic interests
         common_users_query = (
@@ -259,7 +260,7 @@ def read():
                 res.append(post.id)
 
     # save recommendations
-    current_round = Rounds.query.order_by(desc(Rounds.id)).first()
+    # current_round = Rounds.query.order_by(desc(Rounds.id)).first()
     recs = Recommendations(
         user_id=uid, post_ids="|".join([str(x) for x in res]), round=current_round.id
     )
@@ -629,7 +630,7 @@ def get_thread_root():
 
     return json.dumps(post.thread_id)
 
-def __get_followers(uid):
+def __get_follows(uid):
     """
     Get the followers of a user.
 
@@ -637,18 +638,6 @@ def __get_followers(uid):
     :return: a list of followers
     """
     # Get the latest round for each follower-user relationship
-    latest_rounds = Follow.query.filter_by(user_id=uid).with_entities(
-        Follow.follower_id,
-        func.max(Follow.round).label("latest_round")
-    ).group_by(Follow.follower_id).subquery()
-
-    # Filter followers with the latest action as "follow"
-    follower = Follow.query.join(
-        latest_rounds, 
-        (Follow.follower_id == latest_rounds.c.follower_id) & 
-        (Follow.round == latest_rounds.c.latest_round)
-    ).filter(Follow.action == "follow").with_entities(Follow.follower_id).distinct()
-
-    res = [f.follower_id for f in follower if f.follower_id != uid]
+    res = [Follow_status.query.filter_by(user_id=uid).all()]
 
     return res
