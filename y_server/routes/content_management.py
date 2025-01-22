@@ -175,7 +175,8 @@ def read():
                                         visibility=visibility,
                                         articles=articles,
                                         follower_posts_limit=follower_posts_limit,
-                                        additional_posts_limit=additional_posts_limit
+                                        additional_posts_limit=additional_posts_limit,
+
                                     )
 
     elif mode == "common_user_interests":
@@ -183,16 +184,36 @@ def read():
         posts = fetch_common_user_interest_posts(uid=uid,
                                            visibility=visibility,
                                            articles=articles,
-                                           limit=limit,
-                                           reactions_type=["like"]
+                                           follower_posts_limit=follower_posts_limit,
+                                           additional_posts_limit=additional_posts_limit,
+                                           reactions_type=["like", "dislike"]
+                                        )
+        
+    elif mode == "similar_users_react":
+        # get posts from similar users
+        posts = fetch_similar_users_posts(uid=uid,
+                                            visibility=visibility,
+                                            articles=articles,
+                                            limit=limit,
+                                            filter_function=get_posts_by_reactions,
+                                            reactions_type=["like"],
                                         )
 
-    elif mode == "knn_posts":
-        posts = fetch_knn_posts(uid=uid,
-                                visibility=visibility,
-                                limit=limit
-                            )
-        
+    elif mode == "similar_users_posts":
+        # get posts from similar users
+        posts = fetch_similar_users_posts(uid=uid,
+                                            visibility=visibility,
+                                            articles=articles,
+                                            limit=limit,
+                                            filter_function=get_posts_by_author
+                                        )
+    
+    # elif mode == "knn_posts":
+    #     # get posts recommended by KNN
+    #     posts = fetch_knn_posts(uid=uid,
+    #                             visibility=visibility,
+    #                             limit=limit
+    #                         )
     # else:
     #     # get posts in random order
     #     query = Post.query.filter(
@@ -226,7 +247,7 @@ def read():
                 res.append(post[0].id)
             except:
                 res.append(post.id) 
-            
+
     # save recommendations
     recs = Recommendations(
         user_id=uid, post_ids="|".join([str(x) for x in res]), round=current_round.id

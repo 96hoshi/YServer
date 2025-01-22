@@ -1,9 +1,8 @@
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-from sqlalchemy import func, desc
+from sqlalchemy import func, desc, case
 from y_server.modals import db, Post, Post_topics, User_interest, Follow_status, Reactions, User_mgmt
-
 
 
 def get_follows(uid):
@@ -19,23 +18,6 @@ def get_follows(uid):
 
     return res
 
-def print_posts(posts):
-    """
-    Print the post ids.
-
-    :param posts: the posts query result
-    """
-    # print post id
-    res = []
-    for post_type in posts:
-        for post in post_type:
-            try:
-                res.append(post[0].id)
-            except:
-                res.append(post.id)
-    print(res, flush=True)
-
-    return
 
 def fetch_common_interest_posts(uid, visibility, articles, follower_posts_limit, additional_posts_limit):
     """
@@ -51,6 +33,7 @@ def fetch_common_interest_posts(uid, visibility, articles, follower_posts_limit,
     user_interests = db.session.query(User_interest.interest_id).filter_by(user_id=uid).distinct()
     follower_ids = get_follows(uid)
 
+    # fetch posts by followers with common interests
     base_query = (
         db.session.query(Post, func.count(Post_topics.topic_id).label('match_count'))
         .join(Post_topics, Post.id == Post_topics.post_id)
@@ -86,7 +69,8 @@ def fetch_common_interest_posts(uid, visibility, articles, follower_posts_limit,
 
     return posts
 
-def fetch_common_user_interest_posts(uid, visibility, articles, limit, reactions_type:str|list=["like", "dislike"]):
+
+def fetch_common_user_interest_posts(uid, visibility, articles, follower_posts_limit, additional_posts_limit, reactions_type:str|list=["like", "dislike"]):
     """
     Fetch posts reacted by users with common interests.
 
@@ -96,43 +80,187 @@ def fetch_common_user_interest_posts(uid, visibility, articles, limit, reactions
     :param limit: the number of posts to fetch
     :return: the posts query result
     """
-
-    if isinstance(reactions_type, str):
-        reactions_type = [reactions_type]
     
     # get users with common topic interests
-    common_users_query = (
-        db.session.query(User_mgmt.id, func.count(User_interest.interest_id).label("match_count"))
+    user_interests = db.session.query(User_interest.interest_id).filter_by(user_id=uid)
+    common_users = (
+        db.session.query(User_mgmt.id.label("user_id"), func.count(User_interest.interest_id).label("match_count"))
         .join(User_interest, User_mgmt.id == User_interest.user_id)
-        .filter(
-            User_mgmt.id != uid,
-            User_interest.interest_id.in_(
-                db.session.query(User_interest.interest_id).filter_by(user_id=uid)
-            )
-        )
+        .filter(User_mgmt.id != uid, User_interest.interest_id.in_(user_interests))
         .group_by(User_mgmt.id)
         .order_by(desc("match_count"))
-        .limit(limit)
         .subquery()
     )
-    # fetch posts liked by users with common interests
-    posts = [(
-            db.session.query(Post, func.count(Reactions.user_id).label("total"))
-            .join(Reactions, Post.id == Reactions.post_id) 
-            .filter(
-                Reactions.user_id.in_(
-                    db.session.query(common_users_query.c.id)
-                ),
-                Reactions.type.in_(reactions_type),
+
+    # Separate common followers and other users
+
+    follower_ids = get_follows(uid)
+    common_follower_ids = [
+        row.user_id for row in db.session.query(common_users.c.user_id).filter(common_users.c.user_id.in_(follower_ids)).all()
+    ]
+    other_user_ids = [
+        row.user_id for row in db.session.query(common_users.c.user_id).filter(~common_users.c.user_id.in_(common_follower_ids)).all()
+    ]
+
+    # Fetch posts for each group
+    posts_followers = get_posts_by_reactions(visibility, articles, follower_posts_limit, common_follower_ids, reactions_type)
+    posts_additional = get_posts_by_reactions(visibility, articles, additional_posts_limit, other_user_ids, reactions_type)
+    
+    return [posts_followers, posts_additional]
+
+
+def fetch_similar_users_posts(uid, visibility, articles, limit, filter_function, reactions_type:str|list=["like", "dislike"]):
+    """
+    Fetch post related to similar agents to the target user based on specified features.
+
+    :param uid: Target user ID
+    :param visibility: Visibility threshold for posts
+    :param articles: Whether to include articles
+    :param limit: Number of posts to fetch
+    :return: Query result with posts by similar users
+    """
+    # Fetch similar users
+    similar_users = __get_similar_users(uid, limit)
+    # print(similar_users, flush=True)
+    
+    # fetch posts based on the filter function
+    posts = []
+    posts = filter_function(visibility=visibility,
+                                articles=articles,
+                                limit=limit,
+                                user_ids=similar_users,
+                                reactions_type=reactions_type)
+
+    return [posts]
+
+
+def __get_similar_users(uid, limit=10):
+    """
+    Fetch users similar to the given user ID based on specified features.
+
+    :param uid: Target user ID
+    :param limit: Number of similar users to fetch
+    :return: Query result with similar users
+    """
+    # Fetch target user's features
+    target_user = db.session.query(User_mgmt).filter_by(id=uid).first()
+    if not target_user:
+        raise ValueError(f"User with id {uid} does not exist.")
+
+    # Build the similarity query
+    similarity_query = (
+        db.session.query(
+            User_mgmt.id,
+            # Calculate a similarity score
+            (
+                # Exact match on categorical features
+                case([(User_mgmt.leaning == target_user.leaning, 1)], else_=0)
+                + case([(User_mgmt.language == target_user.language, 1)], else_=0)
+                + case([(User_mgmt.education_level == target_user.education_level, 1)], else_=0)
+                + case([(User_mgmt.gender == target_user.gender, 1)], else_=0)
+                + case([(User_mgmt.toxicity == target_user.toxicity, 1)], else_=0)
+                # Partial match for numeric feature (age)
+                + (1 - func.abs(User_mgmt.age - target_user.age) / 100)
+                # Exact match for personality traits
+                + case([(User_mgmt.oe == target_user.oe, 1)], else_=0)
+                + case([(User_mgmt.co == target_user.co, 1)], else_=0)
+                + case([(User_mgmt.ex == target_user.ex, 1)], else_=0)
+                + case([(User_mgmt.ag == target_user.ag, 1)], else_=0)
+                + case([(User_mgmt.ne == target_user.ne, 1)], else_=0)
+            ).label("similarity_score")
+        )
+        .filter(User_mgmt.id != uid) 
+        .order_by(desc("similarity_score"))
+        .limit(limit) 
+    )
+
+    res = similarity_query.all()
+    res = [x[0] for x in res]
+    
+    return res
+
+
+def get_posts_by_author(visibility, articles, limit, user_ids, reactions_type:str|list=["like", "dislike"]):
+    """
+    Fetch posts made by specified users.
+
+    :param visibility: the visibility threshold
+    :param articles: whether to include articles
+    :param limit: the number of posts to fetch
+    :param user_ids: the user ids
+    :return: the posts query result
+    """
+    posts = (Post.query.filter(
+                Post.user_id.in_(user_ids),
                 Post.round >= visibility,
                 Post.news_id != -1 if articles else True
         )
-        .group_by(Post)
-        .order_by(desc("total"), desc(Post.id))
         .limit(limit)
-    )]
+    )
 
     return posts
+
+
+def get_posts_by_reactions(visibility, articles, limit, user_ids, reactions_type:str|list=["like", "dislike"]):
+    """
+    Fetch posts reacted by specified users.
+
+    :param visibility: the visibility threshold
+    :param articles: whether to include articles
+    :param limit: the number of posts to fetch
+    :param user_ids: the user ids
+    :param reactions_type: the type of reactions
+    :return: the posts query result
+    """
+    if isinstance(reactions_type, str):
+        reactions_type = [reactions_type]
+
+    posts = (db.session.query(Post, func.count(Reactions.user_id).label("total"))
+        .join(Reactions, Post.id == Reactions.post_id) 
+        .filter(
+            Reactions.user_id.in_(user_ids),
+            Reactions.type.in_(reactions_type),
+            Post.round >= visibility,
+            Post.news_id != -1 if articles else True
+        )
+        .group_by(Post.id)
+        .order_by(desc("total"), desc(Post.id))
+        .limit(limit)
+    )
+
+    return posts
+
+
+def __get_posts_by_comments(visibility, articles, limit, user_ids):
+    """
+    Fetch posts most commented by specified users.
+
+    :param visibility: the visibility threshold
+    :param articles: whether to include articles
+    :param limit: the number of posts to fetch
+    :param user_ids: the user ids
+    :return: the posts query result
+    """
+    # get posts with the most comments 
+    posts = (
+        db.session.query(Post, func.count(Post.thread_id).label("comment_count"))
+        .filter(
+            Post.round >= visibility,
+            Post.comment_to != -1,
+            Post.news_id != -1 if articles else True
+        )
+        .group_by(Post.thread_id)
+        .order_by(desc("comment_count"), desc(Post.id))
+        .limit(limit)
+        .all()
+    )
+    
+    if user_ids:
+        # filter posts by specified users
+        posts = posts.filter(Post.user_id.in_(user_ids))
+
+    return posts
+
 
 def fetch_knn_posts(uid, visibility, limit):
     """
@@ -196,7 +324,27 @@ def fetch_knn_posts(uid, visibility, limit):
             break
 
     res = list(recommended_post_ids)[:limit]
-    print(res, flush=True)
+    # print(res, flush=True)
     res = [db.session.query(Post).filter(Post.id.in_(res)).all()]
-    print(res, flush=True)
+    # print(res, flush=True)
+
     return res
+
+
+def __print_posts(posts):
+    """
+    Print the post ids.
+
+    :param posts: the posts query result
+    """
+    # print post id
+    res = []
+    for post_type in posts:
+        for post in post_type:
+            try:
+                res.append(post[0].id)
+            except:
+                res.append(post.id)
+    print(res, flush=True)
+
+    return
