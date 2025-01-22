@@ -3,17 +3,15 @@ from flask import request
 from y_server import app, db
 from sqlalchemy import desc
 from sqlalchemy.sql.expression import func
+from y_server.utils import *
 from y_server.modals import (
     Hashtags,
     Post_hashtags,
     Rounds,
     Post,
     Recommendations,
-    Follow,
-    Follow_status,
     Reactions,
     Mentions,
-    User_interest,
     User_mgmt,
     Emotions,
     Post_emotions,
@@ -55,6 +53,9 @@ def read():
         follower_posts_limit = limit
         additional_posts_limit = 0
 
+    posts = []
+    
+
     if mode == "rchrono":
         # get posts in reverse chronological order
         query = db.session.query(Post).filter(
@@ -85,8 +86,7 @@ def read():
 
     elif mode == "rchrono_followers":
         # get posts from followers in reverse chronological order
-
-        follower_ids = __get_follows(uid)
+        follower_ids = get_follows(uid)
         query = Post.query.filter(
             Post.round >= visibility,
             Post.user_id.in_(follower_ids),
@@ -108,8 +108,7 @@ def read():
 
     elif mode == "rchrono_followers_popularity":
         # get posts from followers ordered by likes and reverse chronologically
-
-        follower_ids = __get_follows(uid)
+        follower_ids = get_follows(uid)
         query = (
             db.session.query(Post, func.count(Reactions.user_id).label("total"))
             .join(Reactions)
@@ -139,7 +138,6 @@ def read():
 
     elif mode == "rchrono_comments":
         # get posts with the most comments in reverse chronological order (as longer thread)
-
         query = (
             db.session.query(Post, func.count(Post.thread_id).label("comment_count"))
             .filter(
@@ -149,7 +147,7 @@ def read():
             )
             .group_by(Post.thread_id)
         )
-        follower_ids = __get_follows(uid)
+        follower_ids = get_follows(uid)
         query_follower = query.filter(Post.user_id.in_(follower_ids))
         
         posts = [
@@ -173,83 +171,57 @@ def read():
 
     elif mode == "common_interests":
         # get posts with common topic interests
-        query = (
-            db.session.query(Post, func.count(Post_topics.topic_id).label('match_count'))
-            .join(Post_topics, Post.id == Post_topics.post_id)
-            .filter(
-                Post.round >= visibility,
-                Post.user_id != uid,
-                Post.news_id != -1 if articles else True,
-                Post_topics.topic_id.in_(
-                    db.session.query(User_interest.interest_id).filter_by(user_id=uid)
-                )
-            )
-        )
+        posts = fetch_common_interest_posts(uid=uid,
+                                        visibility=visibility,
+                                        articles=articles,
+                                        follower_posts_limit=follower_posts_limit,
+                                        additional_posts_limit=additional_posts_limit,
 
-        query_follower = query.filter(Post.user_id.in_(follower_ids))
-
-        posts = [
-            query_follower
-            .group_by(Post.id)
-            .order_by(desc('match_count'))
-            .limit(follower_posts_limit)
-        ]
-
-        if additional_posts_limit != 0:
-            query_additional = query.filter(Post.user_id.notin_(follower_ids))
-
-            additional_posts = (
-                query_additional
-                .group_by(Post.id)
-                .order_by(desc('match_count'))
-                .limit(additional_posts_limit)
-            )
-
-            posts += [additional_posts]
+                                    )
 
     elif mode == "common_user_interests":
-        follower_ids = __get_follows(uid)
+        # get most interacted posts by users with common interests
+        posts = fetch_common_user_interest_posts(uid=uid,
+                                           visibility=visibility,
+                                           articles=articles,
+                                           follower_posts_limit=follower_posts_limit,
+                                           additional_posts_limit=additional_posts_limit,
+                                           reactions_type=["like", "dislike"]
+                                        )
+        
+    elif mode == "similar_users_react":
+        # get posts from similar users
+        posts = fetch_similar_users_posts(uid=uid,
+                                            visibility=visibility,
+                                            articles=articles,
+                                            limit=limit,
+                                            filter_function=get_posts_by_reactions,
+                                            reactions_type=["like"],
+                                        )
 
-        # get users with common topic interests
-        common_users_query = (
-            db.session.query(User_mgmt.id, func.count(User_interest.interest_id).label("match_count"))
-            .join(User_interest, User_mgmt.id == User_interest.user_id)
-            .filter(
-                User_mgmt.id != uid,
-                User_interest.interest_id.in_(
-                    db.session.query(User_interest.interest_id).filter_by(user_id=uid)
-                )
-            )
-            .group_by(User_mgmt.id)
-            .order_by(desc("match_count"))
-            .limit(limit)
-            .subquery()
-        )
-        # fetch posts liked by users with common interests
-        posts = [(
-                db.session.query(Post, func.count(Reactions.user_id).label("total"))
-                .join(Reactions, Post.id == Reactions.post_id) 
-                .filter(
-                    Reactions.user_id.in_(
-                        db.session.query(common_users_query.c.id)
-                    ),
-                    Post.round >= visibility,
-                    Post.news_id != -1 if articles else True
-            )
-            .group_by(Post)
-            .order_by(desc("total"), desc(Post.id))
-            .limit(limit)
-        )]
+    elif mode == "similar_users_posts":
+        # get posts from similar users
+        posts = fetch_similar_users_posts(uid=uid,
+                                            visibility=visibility,
+                                            articles=articles,
+                                            limit=limit,
+                                            filter_function=get_posts_by_author
+                                        )
+    
+    # elif mode == "knn_posts":
+    #     # get posts recommended by KNN
+    #     posts = fetch_knn_posts(uid=uid,
+    #                             visibility=visibility,
+    #                             limit=limit
+    #                         )
+    # else:
+    #     # get posts in random order
+    #     query = Post.query.filter(
+    #                             Post.round >= visibility,
+    #                             Post.user_id != uid,
+    #                             Post.news_id != -1 if articles else True)
 
-
-    else:
-        # get posts in random order
-        query = Post.query.filter(
-                                Post.round >= visibility,
-                                Post.user_id != uid,
-                                Post.news_id != -1 if articles else True)
-
-        posts = [query.order_by(func.random()).limit(limit)]
+    #     posts = [query.order_by(func.random()).limit(limit)]
 
     res = []
     for post_type in posts:
@@ -259,8 +231,24 @@ def read():
             except:
                 res.append(post.id)
 
+    n_post = len(res)
+    
+    # fetch additional posts if needed
+    if n_post < limit:
+        query = Post.query.filter(
+                                Post.round >= visibility,
+                                Post.user_id != uid,
+                                Post.news_id != -1 if articles else True,
+                                Post.id.notin_(res)
+                                )
+        posts.append(query.order_by(func.random()).limit(limit - n_post))
+        for post in posts[-1]:
+            try:
+                res.append(post[0].id)
+            except:
+                res.append(post.id) 
+
     # save recommendations
-    # current_round = Rounds.query.order_by(desc(Rounds.id)).first()
     recs = Recommendations(
         user_id=uid, post_ids="|".join([str(x) for x in res]), round=current_round.id
     )
@@ -284,14 +272,29 @@ def search():
     current_round = Rounds.query.order_by(desc(Rounds.id)).first()
     visibility = current_round.id - vround
 
+    # recent_user_hashtags = Hashtags.query.filter(
+    #     Hashtags.id
+    #     == db.session.query(Post_hashtags.hashtag_id).filter(
+    #         Post_hashtags.post_id
+    #         == db.session.query(Post.id).filter(
+    #             Post.user_id == uid, Post.round >= visibility
+    #         )
+    #     )
+    # ).limit(10)
+
+    # Get recent post IDs by the user
+    recent_posts = db.session.query(Post.id).filter(
+        Post.user_id == uid, Post.round >= visibility
+    ).subquery()
+
+    # Get hashtags from the user's recent posts
+    recent_post_hashtags = db.session.query(Post_hashtags.hashtag_id).filter(
+        Post_hashtags.post_id.in_(recent_posts)
+    ).subquery()
+
+    # Query hashtags associated with the recent posts
     recent_user_hashtags = Hashtags.query.filter(
-        Hashtags.id
-        == db.session.query(Post_hashtags.hashtag_id).filter(
-            Post_hashtags.post_id
-            == db.session.query(Post.id).filter(
-                Post.user_id == uid, Post.round >= visibility
-            )
-        )
+        Hashtags.id.in_(recent_post_hashtags)
     ).limit(10)
 
     if recent_user_hashtags is not None:
@@ -363,7 +366,7 @@ def add_post():
     :return: a json object with the status of the post
     """
     data = json.loads(request.get_data())
-    account_id = data["user_id"]
+    user_id = data["user_id"]
     text = data["tweet"].strip('"')
     emotions = data["emotions"]
     hastags = data["hashtags"]
@@ -371,14 +374,14 @@ def add_post():
     topics = data["topics"]
     tid = int(data["tid"])
 
-    user = User_mgmt.query.filter_by(id=account_id).first()
+    # user = User_mgmt.query.filter_by(id=user_id).first()
 
     text = text.strip("-")
 
     post = Post(
         tweet=text,
         round=tid,
-        user_id=user.id,
+        user_id=user_id,
         comment_to=-1,
     )
 
@@ -425,7 +428,7 @@ def add_post():
         us = User_mgmt.query.filter_by(username=mention.strip("@")).first()
 
         # existing user and not self
-        if us is not None and us.id != user.id:
+        if us is not None and us.id != user_id:
             mn = Mentions(user_id=us.id, post_id=post.id, round=tid)
             db.session.add(mn)
             db.session.commit()
@@ -450,7 +453,7 @@ def add_comment():
     :return: a json object with the status of the comment
     """
     data = json.loads(request.get_data())
-    account_id = data["user_id"]
+    user_id = data["user_id"]
     post_id = data["post_id"]
     text = data["text"].strip('"')
     emotions = data["emotions"]
@@ -458,7 +461,7 @@ def add_comment():
     mentions = data["mentions"]
     tid = int(data["tid"])
 
-    user = User_mgmt.query.filter_by(id=account_id).first()
+    #user = User_mgmt.query.filter_by(id=user_id).first()
     post = Post.query.filter_by(id=post_id).first()
 
     text = text.strip("-")
@@ -466,7 +469,7 @@ def add_comment():
     post = Post(
         tweet=text,
         round=tid,
-        user_id=user.id,
+        user_id=user_id,
         comment_to=post_id,
         thread_id=post.thread_id,
     )
@@ -579,14 +582,14 @@ def add_reaction():
     :return: a json object with the status of the reaction
     """
     data = json.loads(request.get_data())
-    account_id = data["user_id"]
+    user_id = data["user_id"]
     post_id = data["post_id"]
     rtype = data["type"]
     tid = int(data["tid"])
 
-    user = User_mgmt.query.filter_by(id=account_id).first()
+    #user = User_mgmt.query.filter_by(id=user_id).first()
 
-    react = Reactions(post_id=post_id, user_id=user.id, round=tid, type=rtype)
+    react = Reactions(post_id=post_id, user_id=user_id, round=tid, type=rtype)
 
     db.session.add(react)
     try:
@@ -629,15 +632,3 @@ def get_thread_root():
     post = Post.query.filter_by(id=post_id).first()
 
     return json.dumps(post.thread_id)
-
-def __get_follows(uid):
-    """
-    Get the followers of a user.
-
-    :param uid: the user id
-    :return: a list of followers
-    """
-    # Get the latest round for each follower-user relationship
-    res = [Follow_status.query.filter_by(user_id=uid).all()]
-
-    return res

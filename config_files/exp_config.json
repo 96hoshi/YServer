@@ -1,8 +1,8 @@
 {
-  "name": "rchrono_comments",
+  "name": "user_base_common_user",
   "host": "0.0.0.0",
-  "port": 5010,
+  "port": 5015,
   "debug": "True",
-  "reset_db": "False",
+  "reset_db": "True",
   "modules": ["news", "voting", "image"]
 }
