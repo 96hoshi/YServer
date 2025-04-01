@@ -8,7 +8,10 @@ from y_server.modals import (
     Post_emotions,
     Hashtags,
     Post_hashtags,
+    Post_Sentiment,
 )
+
+from y_server.content_analysis import vader_sentiment, toxicity
 
 
 @app.route("/comment_image", methods=["POST"])
@@ -26,7 +29,10 @@ def post_image():
     tid = int(data["tid"])
     image_url = data["image_url"]
     image_description = data["image_description"]
-    article_id = int(data["article_id"])
+    try:
+        article_id = int(data["article_id"])
+    except:
+        article_id = None
 
     # check if image exists
     image = Images.query.filter_by(url=image_url).first()
@@ -40,17 +46,35 @@ def post_image():
         db.session.commit()
 
     # get image id
-    image_id = Images.query.filter_by(url=image_url).first().id
+    image_id = Images.query.filter_by(url=image_url).first()
 
     post = Post(
         tweet=text,
         round=tid,
         user_id=account_id,
-        image_id=image_id,
+        image_id=image_id.id,
         comment_to=-1,
     )
 
     db.session.add(post)
+    db.session.commit()
+
+    sentiment = vader_sentiment(text)
+
+    toxicity(text, app.config["perspective_api"], post.id, db)
+
+    post_sentiment = Post_Sentiment(
+        post_id=post.id,
+        user_id=account_id,
+        pos=sentiment["pos"],
+        neg=sentiment["neg"],
+        neu=sentiment["neu"],
+        compound=sentiment["compound"],
+        round=tid,
+        is_post=1,
+        topic_id=-1,
+    )
+    db.session.add(post_sentiment)
     db.session.commit()
 
     post.thread_id = post.id

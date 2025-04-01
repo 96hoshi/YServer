@@ -6,7 +6,6 @@ import numpy as np
 from y_server.modals import (
     User_mgmt,
     Follow,
-    Follow_status
 )
 
 
@@ -32,27 +31,20 @@ def add_follow():
     # cannot follow yourself
     if user_id == target:
         return json.dumps({"status": 200})
+    
+    exiting_rel = (
+        Follow.query.filter_by(user_id=user_id.id, follower_id=target.id)
+        .order_by(Follow.round.desc())
+        .first()
+    )
 
-    existing_rel = Follow_status.query.filter_by(user_id=user_id, follower_id=target).first()
-
-    if action == "follow":
-        if existing_rel:
-            # Already following
-            return json.dumps({"status": 200})
-        else:
-            # Create follow relationship
-            new_follow = Follow_status(user_id=user_id, follower_id=target, round=tid)
-            db.session.add(new_follow)
-    elif action == "unfollow":
-        if existing_rel:
-            # Remove follow relationship
-            db.session.delete(existing_rel)
-        else:
-            # Cannot unfollow if no existing relationship
-            return json.dumps({"status": 200})
-    else:
-        # Invalid action
-        return json.dumps({"status": 400})
+    if exiting_rel:
+        # cannot perform the same action twice in a row
+        if exiting_rel.action == action:
+            return json.dumps({"status": 400})
+    # cannot unfollow if there is no follow
+    elif exiting_rel is None and action == "unfollow":
+        return json.dumps({"status": 200})
 
     rel = Follow(user_id=user_id, follower_id=target, round=tid, action=action)
 
@@ -75,8 +67,15 @@ def followers():
     data = json.loads(request.get_data())
     user_id = data["user_id"]
 
-    # user = User_mgmt.query.filter_by(id=user_id).first()
-    all_followers = Follow_status.query.filter_by(user_id=user_id).all()
+    # all_followers = Follow_status.query.filter_by(user_id=user_id).all()
+    # TODO fix the query to actually retrieve all the followers (exclude the unfollowed ones)
+    all_followers = (
+        Follow.query.filter(Follow.user_id == user_id, Follow.follower_id != user_id)
+        .group_by(Follow.follower_id)
+        .having(func.count().op("%")(2) == 1)
+        .all()
+    )
+
     username = User_mgmt.query.filter_by(id=user_id).first().username
     
     res = []
@@ -108,6 +107,22 @@ def get_follow_suggestions():
         rectype = data["mode"]
     except:
         rectype = "random"
+
+    res = __follow_suggestions(rectype, user_id, n_neighbors, leaning_biased)
+
+    return json.dumps(res)
+
+
+def __follow_suggestions(rectype, user_id, n_neighbors, leaning_biased):
+    """
+    Get follow suggestions for a user based on the follow recommender system.
+
+    :param rectype:
+    :param user_id:
+    :param n_neighbors:
+    :param leaning_biased:
+    :return:
+    """
 
     res = {}
 
@@ -185,7 +200,7 @@ def get_follow_suggestions():
     total = sum(res.values())
     res = {k: v / total for k, v in res.items() if v > 0}
 
-    return json.dumps(res)
+    return res
 
 
 def __get_two_hops_neighbors(node_id):
@@ -199,18 +214,17 @@ def __get_two_hops_neighbors(node_id):
     first_order_followers = set(
         [
             f.follower_id
-            for f in Follow_status.query.filter_by(user_id=node_id)
+            for f in Follow.query.filter_by(user_id=node_id, action="follow")
         ]
     )
     # (direct_neighbors, second_order_followers)
-    second_order_followers = Follow_status.query.filter(
-        Follow_status.user_id.in_(first_order_followers),
-        Follow_status.follower_id != node_id
+    second_order_followers = Follow.query.filter(
+        Follow.user_id.in_(first_order_followers), Follow.action == "follow"
     )
     # (second_order_followers, third_order_followers)
-    third_order_followers = Follow_status.query.filter(
-        Follow_status.user_id.in_([f.follower_id for f in second_order_followers]),
-        Follow_status.follower_id != node_id
+    third_order_followers = Follow.query.filter(
+        Follow.user_id.in_([f.follower_id for f in second_order_followers]),
+        Follow.action == "follow",
     )
 
     candidate_to_follower = {}

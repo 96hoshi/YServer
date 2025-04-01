@@ -1,8 +1,9 @@
 {
-  "name": "user_base_common_user",
+  "name": "small",
   "host": "0.0.0.0",
   "port": 5015,
   "debug": "True",
   "reset_db": "True",
-  "modules": ["news", "voting", "image"]
+  "modules": ["news", "voting", "image"],
+  "perspective_api": null
 }

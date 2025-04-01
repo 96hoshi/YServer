@@ -2,7 +2,24 @@ import json
 from flask import request
 from y_server import app, db
 from sqlalchemy import desc
-from y_server.modals import Post, User_mgmt, Reactions, User_interest, Interests, Rounds
+from y_server.modals import Post, User_mgmt, Reactions, User_interest, Interests
+
+
+@app.route("/get_user_id", methods=["GET", "POST"])
+def get_user_id():
+    """
+    Get the user id.
+
+    :return: a json object with the user id
+    """
+    data = json.loads(request.get_data())
+    username = data["username"]
+
+    user = User_mgmt.query.filter_by(username=username).first()
+    if user is None:
+        return json.dumps({"id": None})
+
+    return json.dumps({"id": user.id})
 
 
 @app.route("/get_user", methods=["POST"])
@@ -76,6 +93,10 @@ def register():
     gender = data["gender"]
     nationality = data["nationality"]
     toxicity = data["toxicity"]
+    daily_activity_level = data["daily_activity_level"]
+
+    profession = data["profession"]
+
     if "is_page" in data:
         is_page = data["is_page"]
     else:
@@ -106,6 +127,8 @@ def register():
             nationality=nationality,
             toxicity=toxicity,
             is_page=is_page,
+            daily_activity_level=daily_activity_level,
+            profession=profession,
         )
         db.session.add(user)
         try:
@@ -129,10 +152,16 @@ def churn_agents():
     left_on = data["left_on"]
 
     #  get the max round value from the post table for each user
-    query = (db.session.query(Post.user_id, db.func.max(Post.round)).
-             join(User_mgmt, Post.user_id == User_mgmt.id).
-             filter(User_mgmt.left_on.is_(None), User_mgmt.is_page == 0).
-             group_by(Post.user_id)).order_by(db.func.max(Post.round).asc()).limit(n_users)
+    query = (
+        (
+            db.session.query(Post.user_id, db.func.max(Post.round))
+            .join(User_mgmt, Post.user_id == User_mgmt.id)
+            .filter(User_mgmt.left_on.is_(None), User_mgmt.is_page == 0)
+            .group_by(Post.user_id)
+        )
+        .order_by(db.func.max(Post.round).asc())
+        .limit(n_users)
+    )
 
     results = query.all()
 
@@ -267,13 +296,27 @@ def set_user_interests():
     user_id = data["user_id"]
     interests = data["interests"]
     round_id = data["round"]
+
     for interest in interests:
         # check if the interest is specified as id or by name
+        iid = None
         if isinstance(interest, str):
-            interest = Interests.query.filter_by(interest=interest).first().iid
+            try:
+                iid = Interests.query.filter_by(interest=interest).first().iid
+            except:
+                # add interest to the interest table
+                ints = Interests(
+                    interest=interest,
+                )
+                db.session.add(ints)
+                db.session.commit()
+                iid = Interests.query.filter_by(interest=interest).first().iid
+
+        else:
+            iid = interest
 
         user_interest = User_interest(
-            user_id=user_id, interest_id=interest, round_id=round_id
+            user_id=user_id, interest_id=iid, round_id=round_id
         )
         db.session.add(user_interest)
         db.session.commit()

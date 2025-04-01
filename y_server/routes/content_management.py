@@ -1,9 +1,16 @@
 import json
-from flask import request
-from y_server import app, db
 from sqlalchemy import desc
 from sqlalchemy.sql.expression import func
-from y_server.utils import *
+from flask import request
+from y_server import app, db
+from y_server.utils import (
+    get_follows,
+    fetch_common_interest_posts,
+    fetch_common_user_interest_posts,
+    fetch_similar_users_posts,
+    get_posts_by_reactions,
+    get_posts_by_author,
+)
 from y_server.modals import (
     Hashtags,
     Post_hashtags,
@@ -16,7 +23,10 @@ from y_server.modals import (
     Emotions,
     Post_emotions,
     Post_topics,
+    Post_Sentiment,
+    Interests,
 )
+from y_server.content_analysis import vader_sentiment, toxicity
 
 
 @app.route("/read", methods=["POST"])
@@ -38,9 +48,18 @@ def read():
         fratio = float(data["followers_ratio"])
     except:
         fratio = 1
+
     articles = False
     if "article" in data:
         articles = True
+        # get the user
+        us = User_mgmt.query.filter_by(id=uid).first()
+        # get news pages ids having the same user leaning
+        pages = User_mgmt.query.filter_by(is_page=1, leaning=us.leaning).all()
+        if pages is not None:
+            pages = [x.id for x in pages]
+        else:
+            pages = []
 
     # visibility
     current_round = Rounds.query.order_by(desc(Rounds.id)).first()
@@ -53,89 +72,184 @@ def read():
         follower_posts_limit = limit
         additional_posts_limit = 0
 
-    posts = []
-    
-
     if mode == "rchrono":
         # get posts in reverse chronological order
-        query = db.session.query(Post).filter(
-            Post.round >= visibility,
-            Post.user_id != uid,
-            Post.news_id != -1 if articles else True
-        )
-
-        posts = [query.order_by(desc(Post.id)).limit(limit)]
+        if articles:
+            posts = (
+                db.session.query(Post)
+                .filter(
+                    Post.round >= visibility,
+                    Post.news_id != -1,
+                    Post.user_id.in_(pages),
+                )
+                .order_by(desc(Post.id))
+                .limit(10)
+            ).all()
+        else:
+            posts = (
+                db.session.query(Post)
+                .filter(Post.round >= visibility, Post.user_id != uid)
+                .order_by(desc(Post.id))
+                .limit(10)
+            ).all()
 
     elif mode == "rchrono_popularity":
-        # get posts ordered by likes in reverse chronological order
-        query = (
-            db.session.query(Post, func.count(Reactions.user_id).label("total"))
-            .filter(
-                Post.round >= visibility,
-                Post.user_id != uid,
-                Post.news_id != -1 if articles else True
-            )
-            .join(Reactions)
-        )
+        # avoid cold start and get 3 additional, rchrono, posts
+        additional_posts_limit = 3
 
-        posts = [
-            query.group_by(Post)
-            .order_by(desc("total"), desc(Post.id))
-            .limit(limit)
-        ]
+        # get posts ordered by likes in reverse chronological order
+        # get unique posts ids from reactions where round >= visibility
+        pids = (
+            db.session.query(Reactions.post_id)
+            .filter(Reactions.round >= visibility)
+            .distinct()
+        ).all()
+
+        pids = [x[0] for x in pids]
+
+        # if pids is empty then select the pids of 5 random posts where round >= visibility
+        if pids is None or len(pids) == 0:
+            pids = (
+                db.session.query(Post.id)
+                .filter(Post.round >= visibility)
+                .order_by(func.random())
+                .limit(5)
+            ).all()
+
+            pids = [x[0] for x in pids]
+
+        if articles:
+            posts = (
+                db.session.query(Post, func.count(Reactions.id).label("total"))
+                .filter(
+                    Post.id.in_(pids),
+                    Post.news_id != -1,
+                    Post.user_id.in_(pages),
+                )
+                .outerjoin(Reactions, Reactions.post_id == Post.id)
+                .group_by(Post.id)
+                .order_by(desc("total"), desc(Post.id))
+                .limit(limit)
+            ).all()
+
+        else:
+            posts = (
+                db.session.query(Post, func.count(Reactions.user_id).label("total"))
+                .filter(Post.id.in_(pids), Post.user_id != uid)
+                .outerjoin(Reactions)
+                .group_by(Post.id)
+                .order_by(desc(func.count(Reactions.user_id)), desc(Post.id))
+                .limit(limit)
+            ).all()
+
+        if additional_posts_limit != 0:
+            if articles:
+                additional_posts = (
+                    Post.query.filter(
+                        Post.round >= visibility,
+                        Post.news_id != -1,
+                        Post.user_id != uid,
+                    )
+                    .order_by(desc(Post.id))
+                    .limit(additional_posts_limit)
+                ).all()
+            else:
+                additional_posts = (
+                    Post.query.filter(Post.round >= visibility, Post.user_id != uid)
+                    .order_by(desc(Post.id))
+                    .limit(additional_posts_limit)
+                ).all()
+
+            posts = [posts, additional_posts]
 
     elif mode == "rchrono_followers":
         # get posts from followers in reverse chronological order
-        follower_ids = get_follows(uid)
-        query = Post.query.filter(
-            Post.round >= visibility,
-            Post.user_id.in_(follower_ids),
-            Post.news_id != -1 if articles else True,
-            Post.user_id != uid)
-        
-        posts = [query.order_by(desc(Post.id)).limit(follower_posts_limit)]
+        if articles:
+            posts = (
+                Post.query.filter(
+                    Post.round >= visibility,
+                    Post.news_id != -1,
+                    Post.user_id.in_(pages),
+                    Post.user_id.in_(follower_ids),
+                )
+                .order_by(desc(Post.id))
+                .limit(follower_posts_limit)
+            ).all()
+        else:
+            posts = (
+                Post.query.filter(
+                    Post.round >= visibility, Post.user_id.in_(follower_ids)
+                )
+                .order_by(desc(Post.id))
+                .limit(follower_posts_limit)
+            ).all()
 
         if additional_posts_limit != 0:
-            additional_posts_query = Post.query.filter(
-                Post.round >= visibility,
-                Post.user_id != uid,
-                Post.user_id.notin_(follower_ids),
-                Post.news_id != -1 if articles else True
-            )
+            if articles:
+                additional_posts = (
+                    Post.query.filter(
+                        Post.round >= visibility,
+                        Post.news_id != -1,
+                        Post.user_id != uid,
+                    )
+                    .order_by(desc(Post.id))
+                    .limit(additional_posts_limit)
+                ).all()
+            else:
+                additional_posts = (
+                    Post.query.filter(Post.round >= visibility, Post.user_id != uid)
+                    .order_by(desc(Post.id))
+                    .limit(additional_posts_limit)
+                ).all()
 
-            additional_posts = additional_posts_query.order_by(desc(Post.id)).limit(additional_posts_limit)
-            posts += [additional_posts]
+            posts = [posts, additional_posts]
 
     elif mode == "rchrono_followers_popularity":
         # get posts from followers ordered by likes and reverse chronologically
-        follower_ids = get_follows(uid)
-        query = (
-            db.session.query(Post, func.count(Reactions.user_id).label("total"))
-            .join(Reactions)
-            .filter(
-                Post.round >= visibility,
-                Post.user_id.in_(follower_ids),
-                Post.news_id != -1 if articles else True
-            )
-        )
-
-        posts = [
-            query.group_by(Post)
-            .order_by(desc("total"), desc(Post.id))
-            .limit(follower_posts_limit)
-        ]
+        if articles:
+            posts = (
+                db.session.query(Post, func.count(Reactions.user_id).label("total"))
+                .outerjoin(Reactions)
+                .filter(
+                    Post.round >= visibility,
+                    Post.news_id != -1,
+                    Post.user_id.in_(pages),
+                )
+                .group_by(Post.id)
+                .order_by(desc(func.count(Reactions.user_id)), desc(Post.id))
+                .limit(follower_posts_limit)
+            ).all()
+        else:
+            posts = (
+                db.session.query(Post, func.count(Reactions.user_id).label("total"))
+                .outerjoin(Reactions)
+                .filter(Post.round >= visibility, Post.user_id.in_(follower_ids))
+                .group_by(Post.id)
+                .order_by(desc(func.count(Reactions.user_id)), desc(Post.id))
+                .limit(follower_posts_limit)
+            ).all()
 
         if additional_posts_limit != 0:
-            additional_query = Post.query.filter(
-                Post.round >= visibility,
-                Post.user_id != uid,
-                Post.user_id.notin_(follower_ids),
-                Post.news_id != -1 if articles else True
-            )
+            if articles:
+                additional_posts = (
+                    Post.query.filter(
+                        Post.round >= visibility,
+                        Post.news_id != -1,
+                        Post.user_id.in_(pages),
+                    )
+                    .order_by(desc(Post.id))
+                    .limit(additional_posts_limit)
+                ).all()
+            else:
+                additional_posts = (
+                    Post.query.filter(Post.round >= visibility, Post.user_id != uid)
+                    .order_by(desc(Post.id))
+                    .limit(additional_posts_limit)
+                ).all()
 
-            additional_posts = additional_query.order_by(desc(Post.id)).limit(additional_posts_limit)
-            posts += [additional_posts]
+            posts = [post, additional_posts]
 
+    # @todo: extends to article and use outejoin to avoid empty posts
     elif mode == "rchrono_comments":
         # get posts with the most comments in reverse chronological order (as longer thread)
         query = (
@@ -143,16 +257,15 @@ def read():
             .filter(
                 Post.round >= visibility,
                 Post.comment_to != -1,
-                Post.news_id != -1 if articles else True
+                Post.news_id != -1 if articles else True,
             )
             .group_by(Post.thread_id)
         )
         follower_ids = get_follows(uid)
         query_follower = query.filter(Post.user_id.in_(follower_ids))
-        
+
         posts = [
-            query_follower
-            .order_by(desc("comment_count"), desc(Post.id))
+            query_follower.order_by(desc("comment_count"), desc(Post.id))
             .limit(follower_posts_limit)
             .all()
         ]
@@ -161,75 +274,89 @@ def read():
             query_additional = query.filter(Post.user_id.notin_(follower_ids))
 
             additional_posts = (
-                query_additional
-                .order_by(desc("comment_count"), desc(Post.id))
+                query_additional.order_by(desc("comment_count"), desc(Post.id))
                 .limit(additional_posts_limit)
                 .all()
             )
 
-            posts += [additional_posts]
+            posts = [posts, additional_posts]
 
     elif mode == "common_interests":
         # get posts with common topic interests
-        posts = fetch_common_interest_posts(uid=uid,
-                                        visibility=visibility,
-                                        articles=articles,
-                                        follower_posts_limit=follower_posts_limit,
-                                        additional_posts_limit=additional_posts_limit,
-
-                                    )
+        posts = fetch_common_interest_posts(
+            uid=uid,
+            visibility=visibility,
+            articles=articles,
+            follower_posts_limit=follower_posts_limit,
+            additional_posts_limit=additional_posts_limit,
+        )
 
     elif mode == "common_user_interests":
         # get most interacted posts by users with common interests
-        posts = fetch_common_user_interest_posts(uid=uid,
-                                           visibility=visibility,
-                                           articles=articles,
-                                           follower_posts_limit=follower_posts_limit,
-                                           additional_posts_limit=additional_posts_limit,
-                                           reactions_type=["like", "dislike"]
-                                        )
-        
+        posts = fetch_common_user_interest_posts(
+            uid=uid,
+            visibility=visibility,
+            articles=articles,
+            follower_posts_limit=follower_posts_limit,
+            additional_posts_limit=additional_posts_limit,
+            reactions_type=["like", "dislike"],
+        )
+
     elif mode == "similar_users_react":
         # get posts from similar users
-        posts = fetch_similar_users_posts(uid=uid,
-                                            visibility=visibility,
-                                            articles=articles,
-                                            limit=limit,
-                                            filter_function=get_posts_by_reactions,
-                                            reactions_type=["like"],
-                                        )
+        posts = fetch_similar_users_posts(
+            uid=uid,
+            visibility=visibility,
+            articles=articles,
+            limit=limit,
+            filter_function=get_posts_by_reactions,
+            reactions_type=["like"],
+        )
 
     elif mode == "similar_users_posts":
         # get posts from similar users
-        posts = fetch_similar_users_posts(uid=uid,
-                                            visibility=visibility,
-                                            articles=articles,
-                                            limit=limit,
-                                            filter_function=get_posts_by_author
-                                        )
-    
-    # elif mode == "knn_posts":
-    #     # get posts recommended by KNN
-    #     posts = fetch_knn_posts(uid=uid,
-    #                             visibility=visibility,
-    #                             limit=limit
-    #                         )
-    # else:
-    #     # get posts in random order
-    #     query = Post.query.filter(
-    #                             Post.round >= visibility,
-    #                             Post.user_id != uid,
-    #                             Post.news_id != -1 if articles else True)
+        posts = fetch_similar_users_posts(
+            uid=uid,
+            visibility=visibility,
+            articles=articles,
+            limit=limit,
+            filter_function=get_posts_by_author,
+        )
 
-    #     posts = [query.order_by(func.random()).limit(limit)]
+    else:
+        # get posts in random order
+        if articles:
+            posts = (
+                Post.query.filter(
+                    Post.round >= visibility,
+                    Post.news_id != -1,
+                    Post.user_id.in_(pages),
+                )
+                .order_by(func.random())
+                .limit(limit)
+            ).all()
+
+        else:
+            posts = (
+                Post.query.filter(Post.round >= visibility, Post.user_id != uid)
+                .order_by(func.random())
+                .limit(limit)
+            ).all()
 
     res = []
+
     for post_type in posts:
-        for post in post_type:
-            try:
-                res.append(post[0].id)
-            except:
-                res.append(post.id)
+        if type(post_type) == list:
+            for post in post_type:
+                try:
+                    res.append(post[0].id)
+                except:
+                    res.append(post.id)
+        else:
+            if type(post_type) == tuple:
+                res.append(post_type[0].id)
+            else:
+                res.append(post_type.id)
 
     n_post = len(res)
     
@@ -249,11 +376,15 @@ def read():
                 res.append(post.id) 
 
     # save recommendations
-    recs = Recommendations(
-        user_id=uid, post_ids="|".join([str(x) for x in res]), round=current_round.id
-    )
-    db.session.add(recs)
-    db.session.commit()
+    current_round = Rounds.query.order_by(desc(Rounds.id)).first()
+    if len(res) > 0:
+        recs = Recommendations(
+            user_id=uid,
+            post_ids="|".join([str(x) for x in res]),
+            round=current_round.id,
+        )
+        db.session.add(recs)
+        db.session.commit()
     return json.dumps(res)
 
 
@@ -294,7 +425,15 @@ def search():
 
     # Query hashtags associated with the recent posts
     recent_user_hashtags = Hashtags.query.filter(
-        Hashtags.id.in_(recent_post_hashtags)
+        Hashtags.id
+        == db.session.query(Post_hashtags.hashtag_id)
+        .filter(
+            Post_hashtags.post_id
+            == db.session.query(Post.id)
+            .filter(Post.user_id == uid, Post.round >= visibility)
+            .scalar_subquery()  # Explicit scalar subquery
+        )
+        .scalar_subquery()  # Explicit scalar subquery
     ).limit(10)
 
     if recent_user_hashtags is not None:
@@ -346,8 +485,8 @@ def read_mention():
             Mentions.answered == 0,
         )
         .order_by(func.random())
-        .first()
-    )
+        .limit(1)
+    ).first()
 
     if mention is not None:
         mention.answered = 1
@@ -374,7 +513,7 @@ def add_post():
     topics = data["topics"]
     tid = int(data["tid"])
 
-    # user = User_mgmt.query.filter_by(id=user_id).first()
+    user = User_mgmt.query.filter_by(id=user_id).first()
 
     text = text.strip("-")
 
@@ -388,12 +527,30 @@ def add_post():
     db.session.add(post)
     db.session.commit()
 
+    sentiment = vader_sentiment(text)
+
+    toxicity(text, app.config["perspective_api"], post.id, db)
+
     post.thread_id = post.id
     db.session.commit()
 
     for topic_id in topics:
         tp = Post_topics(post_id=post.id, topic_id=topic_id)
         db.session.add(tp)
+        db.session.commit()
+
+        post_sentiment = Post_Sentiment(
+            post_id=post.id,
+            user_id=user_id,
+            pos=sentiment["pos"],
+            neg=sentiment["neg"],
+            neu=sentiment["neu"],
+            compound=sentiment["compound"],
+            round=tid,
+            is_post=1,
+            topic_id=topic_id,
+        )
+        db.session.add(post_sentiment)
         db.session.commit()
 
     for emotion in emotions:
@@ -461,12 +618,12 @@ def add_comment():
     mentions = data["mentions"]
     tid = int(data["tid"])
 
-    #user = User_mgmt.query.filter_by(id=user_id).first()
+    user = User_mgmt.query.filter_by(id=user_id).first()
     post = Post.query.filter_by(id=post_id).first()
 
     text = text.strip("-")
 
-    post = Post(
+    new_post = Post(
         tweet=text,
         round=tid,
         user_id=user_id,
@@ -474,8 +631,44 @@ def add_comment():
         thread_id=post.thread_id,
     )
 
-    db.session.add(post)
+    db.session.add(new_post)
     db.session.commit()
+
+    # get sentiment of the post is responding to
+    sentiment_parent = Post_Sentiment.query.filter_by(post_id=post_id).first()
+    if sentiment_parent is not None:
+        sentiment_parent = sentiment_parent.compound
+        # thresholding
+        if sentiment_parent > 0.05:
+            sentiment_parent = "pos"
+        elif sentiment_parent < -0.05:
+            sentiment_parent = "neg"
+        else:
+            sentiment_parent = "neu"
+    else:
+        sentiment_parent = ""
+
+    sentiment = vader_sentiment(text)
+
+    toxicity(text, app.config["perspective_api"], new_post.id, db)
+
+    # get topics associated to post.id
+    post_topics = Post_topics.query.filter_by(post_id=post.thread_id).all()
+    for topic in post_topics:
+        post_sentiment = Post_Sentiment(
+            post_id=new_post.id,
+            user_id=user.id,
+            pos=sentiment["pos"],
+            neg=sentiment["neg"],
+            neu=sentiment["neu"],
+            compound=sentiment["compound"],
+            sentiment_parent=sentiment_parent,
+            round=tid,
+            is_comment=1,
+            topic_id=topic.topic_id,
+        )
+        db.session.add(post_sentiment)
+        db.session.commit()
 
     for emotion in emotions:
         if len(emotion) < 1:
@@ -483,7 +676,7 @@ def add_comment():
 
         em = Emotions.query.filter_by(emotion=emotion).first()
         if em is not None:
-            post_emotion = Post_emotions(post_id=post.id, emotion_id=em.id)
+            post_emotion = Post_emotions(post_id=new_post.id, emotion_id=em.id)
             db.session.add(post_emotion)
             db.session.commit()
 
@@ -498,7 +691,7 @@ def add_comment():
             db.session.commit()
             ht = Hashtags.query.filter_by(hashtag=tag).first()
 
-        post_tag = Post_hashtags(post_id=post.id, hashtag_id=ht.id)
+        post_tag = Post_hashtags(post_id=new_post.id, hashtag_id=ht.id)
         db.session.add(post_tag)
         db.session.commit()
 
@@ -508,7 +701,7 @@ def add_comment():
 
         us = User_mgmt.query.filter_by(username=mention.strip("@")).first()
         if us is not None:
-            mn = Mentions(user_id=us.id, post_id=post.id, round=tid)
+            mn = Mentions(user_id=us.id, post_id=new_post.id, round=tid)
             db.session.add(mn)
             db.session.commit()
         else:
@@ -553,6 +746,60 @@ def post_thread():
     return json.dumps(res)
 
 
+@app.route("/get_post_topics_name", methods=["GET", "POST"])
+def get_post_topics_name():
+    """
+    Get the topics of a post.
+
+    :return: a json object with the topics
+    """
+    data = json.loads(request.get_data())
+    post_id = data["post_id"]
+
+    post_topics = Post_topics.query.filter_by(post_id=post_id).all()
+
+    res = []
+    for topic in post_topics:
+        tp = Interests.query.filter_by(iid=topic.topic_id).first()
+        if tp is not None:
+            res.append(tp.interest)
+
+    return json.dumps(res)
+
+
+@app.route("/get_sentiment", methods=["POST", "GET"])
+def get_sentiment():
+    """
+    Get the sentiment of a post.
+
+    :return: a json object with the sentiment
+    """
+    data = json.loads(request.get_data())
+    user_id = data["user_id"]
+    interests = data["interests"]
+
+    res = []
+
+    for interest in interests:
+        topic = Interests.query.filter_by(interest=interest).first()
+        post_sentiment = (
+            Post_Sentiment.query.filter_by(user_id=user_id, topic_id=topic.iid)
+            .order_by(desc(Post_Sentiment.id))
+            .first()
+        )
+        if post_sentiment is not None:
+            # thresholding compound
+            if post_sentiment.compound > 0.05:
+                sentiment = "positive"
+            elif post_sentiment.compound < -0.05:
+                sentiment = "negative"
+            else:
+                sentiment = "neutral"
+            res.append({"topic": interest, "sentiment": sentiment})
+
+    return json.dumps(res)
+
+
 @app.route(
     "/get_post",
     methods=["POST", "GET"],
@@ -587,7 +834,7 @@ def add_reaction():
     rtype = data["type"]
     tid = int(data["tid"])
 
-    #user = User_mgmt.query.filter_by(id=user_id).first()
+    user = User_mgmt.query.filter_by(id=user_id).first()
 
     react = Reactions(post_id=post_id, user_id=user_id, round=tid, type=rtype)
 
@@ -596,6 +843,35 @@ def add_reaction():
         db.session.commit()
     except:
         pass
+
+    # get compound sentiment of post
+    post_sentiment = Post_Sentiment.query.filter_by(post_id=int(post_id)).all()
+    for topic_sentiment in post_sentiment:
+        topic_id = topic_sentiment.topic_id
+        compound = topic_sentiment.compound
+        # thresholding compound
+        if compound > 0.05:
+            sentiment = "pos"
+        elif compound < -0.05:
+            sentiment = "neg"
+        else:
+            sentiment = "neu"
+
+        # create reaction sentiment
+        reaction_sentiment = Post_Sentiment(
+            post_id=post_id,
+            user_id=user.id,
+            pos=0 if rtype == "dislike" else 1,
+            neg=0 if rtype == "like" else 1,
+            neu=0,
+            compound=1 if rtype == "like" else -1,
+            sentiment_parent=sentiment,
+            round=tid,
+            is_reaction=1,
+            topic_id=topic_id,
+        )
+        db.session.add(reaction_sentiment)
+        db.session.commit()
 
     return json.dumps({"status": 200})
 

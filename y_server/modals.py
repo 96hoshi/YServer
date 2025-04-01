@@ -27,6 +27,8 @@ class User_mgmt(UserMixin, db.Model):
     toxicity = db.Column(db.String(10), default="no")
     is_page = db.Column(db.Integer, default=0)
     left_on = db.Column(db.Integer, default=None)
+    daily_activity_level = db.Column(db.Integer(), default=1)
+    profession = db.Column(db.String(50), default="")
 
     posts = db.relationship("Post", backref="author", lazy=True)
     liked = db.relationship("Reactions", backref="liked_by", lazy=True)
@@ -164,8 +166,32 @@ class Article_topics(db.Model):
     topic_id = db.Column(db.Integer, db.ForeignKey("interests.iid"), nullable=False)
 
 
-class Follow_status(db.Model):
+class Post_Sentiment(db.Model):
+    __tablename__ = "post_sentiment"
     id = db.Column(db.Integer, primary_key=True)
+    post_id = db.Column(db.Integer, db.ForeignKey("post.id"), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey("user_mgmt.id"), nullable=False)
-    follower_id = db.Column(db.Integer, db.ForeignKey("user_mgmt.id"), nullable=False)
-    round = db.Column(db.Integer, nullable=False)
+    round = db.Column(db.Integer, db.ForeignKey("rounds.id"), nullable=False)
+    topic_id = db.Column(db.Integer, db.ForeignKey("interests.iid"), nullable=False)
+    is_post = db.Column(db.Integer, default=0)
+    is_comment = db.Column(db.Integer, default=0)
+    is_reaction = db.Column(db.Integer, default=0)
+    neg = db.Column(db.REAL)
+    neu = db.Column(db.REAL)
+    pos = db.Column(db.REAL)
+    compound = db.Column(db.REAL)
+    sentiment_parent = db.Column(db.String(5), default="")
+
+
+class Post_Toxicity(db.Model):
+    __tablename__ = "post_toxicity"
+    id = db.Column(db.Integer, primary_key=True)
+    post_id = db.Column(db.Integer, db.ForeignKey("post.id"), nullable=False)
+    toxicity = db.Column(db.REAL, default=0)
+    severe_toxicity = db.Column(db.REAL, default=0)
+    identity_attack = db.Column(db.REAL, default=0)
+    insult = db.Column(db.REAL, default=0)
+    profanity = db.Column(db.REAL, default=0)
+    threat = db.Column(db.REAL, default=0)
+    sexually_explicit = db.Column(db.REAL, default=0)
+    flirtation = db.Column(db.REAL, default=0)
