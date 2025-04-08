@@ -25,28 +25,28 @@ def add_follow():
     action = data["action"]
     tid = int(data["tid"])
 
-    user_id = User_mgmt.query.filter_by(id=user_id).first()
-    target = User_mgmt.query.filter_by(id=target).first()
+    # user_id = User_mgmt.query.filter_by(id=user_id).first()
+    # target = User_mgmt.query.filter_by(id=target).first()
 
     # cannot follow yourself
-    if user_id.id == target.id:
+    if user_id == target:
         return json.dumps({"status": 200})
-
+    
     exiting_rel = (
         Follow.query.filter_by(user_id=user_id.id, follower_id=target.id)
         .order_by(Follow.round.desc())
         .first()
     )
 
-    if exiting_rel is not None:
+    if exiting_rel:
         # cannot perform the same action twice in a row
         if exiting_rel.action == action:
-            return json.dumps({"status": 200})
+            return json.dumps({"status": 400})
     # cannot unfollow if there is no follow
     elif exiting_rel is None and action == "unfollow":
         return json.dumps({"status": 200})
 
-    rel = Follow(user_id=user_id.id, follower_id=target.id, round=tid, action=action)
+    rel = Follow(user_id=user_id, follower_id=target, round=tid, action=action)
 
     db.session.add(rel)
     db.session.commit()
@@ -67,15 +67,23 @@ def followers():
     data = json.loads(request.get_data())
     user_id = data["user_id"]
 
-    user = User_mgmt.query.filter_by(id=user_id).first()
-    all_followers = Follow.query.filter_by(user_id=user.id)
+    # all_followers = Follow_status.query.filter_by(user_id=user_id).all()
+    # TODO fix the query to actually retrieve all the followers (exclude the unfollowed ones)
+    all_followers = (
+        Follow.query.filter(Follow.user_id == user_id, Follow.follower_id != user_id)
+        .group_by(Follow.follower_id)
+        .having(func.count().op("%")(2) == 1)
+        .all()
+    )
 
+    username = User_mgmt.query.filter_by(id=user_id).first().username
+    
     res = []
     for follower in all_followers:
         res.append(
             {
                 "user_id": follower.follower_id,
-                "username": User_mgmt.query.filter_by(id=user_id).first().username,
+                "username": username,
                 "since": follower.round,
             }
         )

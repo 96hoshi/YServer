@@ -169,7 +169,6 @@ def fetch_similar_users_posts(
     """
     # Fetch similar users
     similar_users = __get_similar_users(uid, limit)
-    # print(similar_users, flush=True)
 
     # fetch posts based on the filter function
     posts = []
@@ -321,7 +320,6 @@ def __get_posts_by_comments(visibility, articles, limit, user_ids):
         .limit(limit)
         .all()
     )
-
     if user_ids:
         # filter posts by specified users
         posts = posts.filter(Post.user_id.in_(user_ids))

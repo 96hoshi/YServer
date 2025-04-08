@@ -1,4 +1,6 @@
 import json
+from sqlalchemy import desc
+from sqlalchemy.sql.expression import func
 from flask import request
 from y_server import app, db
 from y_server.utils import (
@@ -9,15 +11,12 @@ from y_server.utils import (
     get_posts_by_reactions,
     get_posts_by_author,
 )
-from sqlalchemy import desc
-from sqlalchemy.sql.expression import func
 from y_server.modals import (
     Hashtags,
     Post_hashtags,
     Rounds,
     Post,
     Recommendations,
-    Follow,
     Reactions,
     Mentions,
     User_mgmt,
@@ -164,17 +163,6 @@ def read():
             posts = [posts, additional_posts]
 
     elif mode == "rchrono_followers":
-        if fratio < 1:
-            follower_posts_limit = int(limit * fratio)
-            additional_posts_limit = limit - follower_posts_limit
-        else:
-            follower_posts_limit = limit
-            additional_posts_limit = 0
-
-        # get followers
-        follower = Follow.query.filter_by(action="follow", user_id=uid)
-        follower_ids = [f.follower_id for f in follower if f.follower_id != uid]
-
         # get posts from followers in reverse chronological order
         if articles:
             posts = (
@@ -217,17 +205,6 @@ def read():
             posts = [posts, additional_posts]
 
     elif mode == "rchrono_followers_popularity":
-        if fratio < 1:
-            follower_posts_limit = int(limit * fratio)
-            additional_posts_limit = limit - follower_posts_limit
-        else:
-            follower_posts_limit = limit
-            additional_posts_limit = 0
-
-        # get followers
-        follower = Follow.query.filter_by(action="follow", user_id=uid)
-        follower_ids = [f.follower_id for f in follower if f.follower_id != uid]
-
         # get posts from followers ordered by likes and reverse chronologically
         if articles:
             posts = (
@@ -270,7 +247,7 @@ def read():
                     .limit(additional_posts_limit)
                 ).all()
 
-            posts = [posts, additional_posts]
+            posts = [post, additional_posts]
 
     # @todo: extends to article and use outejoin to avoid empty posts
     elif mode == "rchrono_comments":
@@ -381,6 +358,23 @@ def read():
             else:
                 res.append(post_type.id)
 
+    n_post = len(res)
+    
+    # fetch additional posts if needed
+    if n_post < limit:
+        query = Post.query.filter(
+                                Post.round >= visibility,
+                                Post.user_id != uid,
+                                Post.news_id != -1 if articles else True,
+                                Post.id.notin_(res)
+                                )
+        posts.append(query.order_by(func.random()).limit(limit - n_post))
+        for post in posts[-1]:
+            try:
+                res.append(post[0].id)
+            except:
+                res.append(post.id) 
+
     # save recommendations
     current_round = Rounds.query.order_by(desc(Rounds.id)).first()
     if len(res) > 0:
@@ -409,6 +403,27 @@ def search():
     current_round = Rounds.query.order_by(desc(Rounds.id)).first()
     visibility = current_round.id - vround
 
+    # recent_user_hashtags = Hashtags.query.filter(
+    #     Hashtags.id
+    #     == db.session.query(Post_hashtags.hashtag_id).filter(
+    #         Post_hashtags.post_id
+    #         == db.session.query(Post.id).filter(
+    #             Post.user_id == uid, Post.round >= visibility
+    #         )
+    #     )
+    # ).limit(10)
+
+    # Get recent post IDs by the user
+    recent_posts = db.session.query(Post.id).filter(
+        Post.user_id == uid, Post.round >= visibility
+    ).subquery()
+
+    # Get hashtags from the user's recent posts
+    recent_post_hashtags = db.session.query(Post_hashtags.hashtag_id).filter(
+        Post_hashtags.post_id.in_(recent_posts)
+    ).subquery()
+
+    # Query hashtags associated with the recent posts
     recent_user_hashtags = Hashtags.query.filter(
         Hashtags.id
         == db.session.query(Post_hashtags.hashtag_id)
@@ -490,7 +505,7 @@ def add_post():
     :return: a json object with the status of the post
     """
     data = json.loads(request.get_data())
-    account_id = data["user_id"]
+    user_id = data["user_id"]
     text = data["tweet"].strip('"')
     emotions = data["emotions"]
     hastags = data["hashtags"]
@@ -498,14 +513,14 @@ def add_post():
     topics = data["topics"]
     tid = int(data["tid"])
 
-    user = User_mgmt.query.filter_by(id=account_id).first()
+    user = User_mgmt.query.filter_by(id=user_id).first()
 
     text = text.strip("-")
 
     post = Post(
         tweet=text,
         round=tid,
-        user_id=user.id,
+        user_id=user_id,
         comment_to=-1,
     )
 
@@ -526,7 +541,7 @@ def add_post():
 
         post_sentiment = Post_Sentiment(
             post_id=post.id,
-            user_id=user.id,
+            user_id=user_id,
             pos=sentiment["pos"],
             neg=sentiment["neg"],
             neu=sentiment["neu"],
@@ -570,7 +585,7 @@ def add_post():
         us = User_mgmt.query.filter_by(username=mention.strip("@")).first()
 
         # existing user and not self
-        if us is not None and us.id != user.id:
+        if us is not None and us.id != user_id:
             mn = Mentions(user_id=us.id, post_id=post.id, round=tid)
             db.session.add(mn)
             db.session.commit()
@@ -595,7 +610,7 @@ def add_comment():
     :return: a json object with the status of the comment
     """
     data = json.loads(request.get_data())
-    account_id = data["user_id"]
+    user_id = data["user_id"]
     post_id = data["post_id"]
     text = data["text"].strip('"')
     emotions = data["emotions"]
@@ -603,7 +618,7 @@ def add_comment():
     mentions = data["mentions"]
     tid = int(data["tid"])
 
-    user = User_mgmt.query.filter_by(id=account_id).first()
+    user = User_mgmt.query.filter_by(id=user_id).first()
     post = Post.query.filter_by(id=post_id).first()
 
     text = text.strip("-")
@@ -611,7 +626,7 @@ def add_comment():
     new_post = Post(
         tweet=text,
         round=tid,
-        user_id=user.id,
+        user_id=user_id,
         comment_to=post_id,
         thread_id=post.thread_id,
     )
@@ -814,14 +829,14 @@ def add_reaction():
     :return: a json object with the status of the reaction
     """
     data = json.loads(request.get_data())
-    account_id = data["user_id"]
+    user_id = data["user_id"]
     post_id = data["post_id"]
     rtype = data["type"]
     tid = int(data["tid"])
 
-    user = User_mgmt.query.filter_by(id=account_id).first()
+    user = User_mgmt.query.filter_by(id=user_id).first()
 
-    react = Reactions(post_id=post_id, user_id=user.id, round=tid, type=rtype)
+    react = Reactions(post_id=post_id, user_id=user_id, round=tid, type=rtype)
 
     db.session.add(react)
     try:
