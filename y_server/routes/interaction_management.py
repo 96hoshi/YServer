@@ -21,19 +21,22 @@ def add_follow():
     """
     data = json.loads(request.get_data())
     user_id = data["user_id"]
-    target = data["target"]
+    target_id = data["target"]
     action = data["action"]
     tid = int(data["tid"])
 
-    # user_id = User_mgmt.query.filter_by(id=user_id).first()
-    # target = User_mgmt.query.filter_by(id=target).first()
+    user = User_mgmt.query.filter_by(id=user_id).first()
+    target = User_mgmt.query.filter_by(id=target_id).first()
+
+    if not user or not target:
+        return json.dumps({"status": 400, "error": "Invalid user_id or target"})
 
     # cannot follow yourself
-    if user_id == target:
+    if user_id == target_id:
         return json.dumps({"status": 200})
     
     exiting_rel = (
-        Follow.query.filter_by(user_id=user_id.id, follower_id=target.id)
+        Follow.query.filter_by(user_id=user_id, follower_id=target_id)
         .order_by(Follow.round.desc())
         .first()
     )
@@ -46,7 +49,7 @@ def add_follow():
     elif exiting_rel is None and action == "unfollow":
         return json.dumps({"status": 200})
 
-    rel = Follow(user_id=user_id, follower_id=target, round=tid, action=action)
+    rel = Follow(user_id=user_id, follower_id=target_id, round=tid, action=action)
 
     db.session.add(rel)
     db.session.commit()

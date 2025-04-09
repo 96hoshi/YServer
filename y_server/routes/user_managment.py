@@ -95,7 +95,7 @@ def register():
     toxicity = data["toxicity"]
     daily_activity_level = data["daily_activity_level"]
 
-    profession = data["profession"]
+    #profession = data["profession"]
 
     if "is_page" in data:
         is_page = data["is_page"]
@@ -128,7 +128,7 @@ def register():
             toxicity=toxicity,
             is_page=is_page,
             daily_activity_level=daily_activity_level,
-            profession=profession,
+            #profession=profession,
         )
         db.session.add(user)
         try:

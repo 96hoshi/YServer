@@ -164,6 +164,7 @@ def read():
 
     elif mode == "rchrono_followers":
         # get posts from followers in reverse chronological order
+        follower_ids = get_follows(uid)
         if articles:
             posts = (
                 Post.query.filter(
@@ -220,6 +221,7 @@ def read():
                 .limit(follower_posts_limit)
             ).all()
         else:
+            follower_ids = get_follows(uid)
             posts = (
                 db.session.query(Post, func.count(Reactions.user_id).label("total"))
                 .outerjoin(Reactions)
@@ -247,7 +249,7 @@ def read():
                     .limit(additional_posts_limit)
                 ).all()
 
-            posts = [post, additional_posts]
+            posts = [posts, additional_posts]
 
     # @todo: extends to article and use outejoin to avoid empty posts
     elif mode == "rchrono_comments":
@@ -403,27 +405,6 @@ def search():
     current_round = Rounds.query.order_by(desc(Rounds.id)).first()
     visibility = current_round.id - vround
 
-    # recent_user_hashtags = Hashtags.query.filter(
-    #     Hashtags.id
-    #     == db.session.query(Post_hashtags.hashtag_id).filter(
-    #         Post_hashtags.post_id
-    #         == db.session.query(Post.id).filter(
-    #             Post.user_id == uid, Post.round >= visibility
-    #         )
-    #     )
-    # ).limit(10)
-
-    # Get recent post IDs by the user
-    recent_posts = db.session.query(Post.id).filter(
-        Post.user_id == uid, Post.round >= visibility
-    ).subquery()
-
-    # Get hashtags from the user's recent posts
-    recent_post_hashtags = db.session.query(Post_hashtags.hashtag_id).filter(
-        Post_hashtags.post_id.in_(recent_posts)
-    ).subquery()
-
-    # Query hashtags associated with the recent posts
     recent_user_hashtags = Hashtags.query.filter(
         Hashtags.id
         == db.session.query(Post_hashtags.hashtag_id)
