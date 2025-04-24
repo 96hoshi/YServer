@@ -1,7 +1,7 @@
 {
-  "name": "test",
+  "name": "user_similarity_reactions",
   "host": "0.0.0.0",
-  "port": 5013,
+  "port": 5035,
   "debug": "True",
   "reset_db": "False",
   "modules": ["news", "voting", "image"],

@@ -1,7 +1,7 @@
 {
-  "name": "test",
+  "name": "rchrono_threads",
   "host": "0.0.0.0",
-  "port": 5013,
+  "port": 5033,
   "debug": "True",
   "reset_db": "False",
   "modules": ["news", "voting", "image"],

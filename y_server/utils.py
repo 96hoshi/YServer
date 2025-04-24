@@ -9,6 +9,8 @@ from y_server.modals import (
     User_mgmt,
 )
 
+DEFAULT_REACTIONS_TYPE = ["like", "dislike"]
+
 
 def get_follows(uid):
     """
@@ -17,9 +19,8 @@ def get_follows(uid):
     :param uid: the user id
     :return: a list of followers
     """
-    # Get the latest round for each follower-user relationship
-    # res = Follow_status.query.filter_by(user_id=uid).all()
 
+    # TODO: check correctness
     # get the followers of the user with the given uid
     res = (
         Follow.query.filter(Follow.user_id == uid, Follow.follower_id != uid)
@@ -50,6 +51,8 @@ def fetch_common_interest_posts(
         db.session.query(User_interest.interest_id).filter_by(user_id=uid).distinct()
     )
     follower_ids = get_follows(uid)
+    if not follower_ids:
+        return []  # Return an empty result if no followers are found
 
     # fetch posts by followers with common interests
     base_query = (
@@ -98,7 +101,7 @@ def fetch_common_user_interest_posts(
     articles,
     follower_posts_limit,
     additional_posts_limit,
-    reactions_type: str | list = ["like", "dislike"],
+    reactions_type: str | list = DEFAULT_REACTIONS_TYPE,
 ):
     """
     Fetch posts reacted by users with common interests.
@@ -156,7 +159,7 @@ def fetch_similar_users_posts(
     articles,
     limit,
     filter_function,
-    reactions_type: str | list = ["like", "dislike"],
+    reactions_type: str | list = DEFAULT_REACTIONS_TYPE,
 ):
     """
     Fetch post related to similar agents to the target user based on specified features.
@@ -240,7 +243,7 @@ def get_posts_by_author(
     articles,
     limit,
     user_ids,
-    reactions_type: str | list = ["like", "dislike"],
+    reactions_type: str | list = DEFAULT_REACTIONS_TYPE
 ):
     """
     Fetch posts made by specified users.
@@ -265,7 +268,7 @@ def get_posts_by_reactions(
     articles,
     limit,
     user_ids,
-    reactions_type: str | list = ["like", "dislike"],
+    reactions_type: str | list = DEFAULT_REACTIONS_TYPE,
 ):
     """
     Fetch posts reacted by specified users.

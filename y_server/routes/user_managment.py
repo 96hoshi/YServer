@@ -60,6 +60,7 @@ def get_user():
             "nationality": user.nationality,
             "toxicity": user.toxicity,
             "is_page": user.is_page,
+            "daily_activity_level": user.daily_activity_level,
         }
     )
 

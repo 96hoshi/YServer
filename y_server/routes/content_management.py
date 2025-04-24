@@ -252,7 +252,7 @@ def read():
             posts = [posts, additional_posts]
 
     # @todo: extends to article and use outejoin to avoid empty posts
-    elif mode == "rchrono_comments":
+    elif mode == "rchrono_threads":
         # get posts with the most comments in reverse chronological order (as longer thread)
         query = (
             db.session.query(Post, func.count(Post.thread_id).label("comment_count"))
@@ -283,7 +283,7 @@ def read():
 
             posts = [posts, additional_posts]
 
-    elif mode == "common_interests":
+    elif mode == "interest_match_posts":
         # get posts with common topic interests
         posts = fetch_common_interest_posts(
             uid=uid,
@@ -293,7 +293,7 @@ def read():
             additional_posts_limit=additional_posts_limit,
         )
 
-    elif mode == "common_user_interests":
+    elif mode == "interest_match_reactions":
         # get most interacted posts by users with common interests
         posts = fetch_common_user_interest_posts(
             uid=uid,
@@ -304,7 +304,7 @@ def read():
             reactions_type=["like", "dislike"],
         )
 
-    elif mode == "similar_users_react":
+    elif mode == "user_similarity_reactions":
         # get posts from similar users
         posts = fetch_similar_users_posts(
             uid=uid,
@@ -315,7 +315,7 @@ def read():
             reactions_type=["like"],
         )
 
-    elif mode == "similar_users_posts":
+    elif mode == "user_similarity_posts":
         # get posts from similar users
         posts = fetch_similar_users_posts(
             uid=uid,
