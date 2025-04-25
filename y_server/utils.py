@@ -74,7 +74,7 @@ def fetch_common_interest_posts(
     posts = []
 
     # Posts by followers with common interests
-    posts.append(
+    posts.extend(
         create_query(
             Post.user_id.in_(follower_ids),
             Post_topics.topic_id.in_(user_interests),
@@ -84,7 +84,7 @@ def fetch_common_interest_posts(
 
     # Additional posts with common interests
     if additional_posts_limit > 0:
-        posts.append(
+        posts.extend(
             create_query(
                 Post.user_id.notin_(follower_ids),
                 Post_topics.topic_id.in_(user_interests),
@@ -254,11 +254,13 @@ def get_posts_by_author(
     :param user_ids: the user ids
     :return: the posts query result
     """
-    posts = Post.query.filter(
-        Post.user_id.in_(user_ids),
-        Post.round >= visibility,
-        Post.news_id != -1 if articles else True,
-    ).limit(limit)
+    posts = (
+        Post.query.filter(
+            Post.user_id.in_(user_ids),
+            Post.round >= visibility,
+            Post.news_id != -1 if articles else True,
+        ).limit(limit)
+    ).all()
 
     return posts
 
@@ -295,7 +297,7 @@ def get_posts_by_reactions(
         .group_by(Post.id)
         .order_by(desc("total"), desc(Post.id))
         .limit(limit)
-    )
+    ).all()
 
     return posts
 
